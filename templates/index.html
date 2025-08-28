@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="el">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Desktop Chatbot</title>
+ <link rel="stylesheet" href="/static/styles.css" />
+<script src="/static/js/app.js" defer></script>
+
+
+</head>
+<body>
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>Chats</h2>
+        <button id="new-convo-btn" title="New conversation">+</button>
+      </div>
+      <ul id="conversations" class="convo-list" aria-label="Saved conversations"></ul>
+
+      <div class="profile">
+        <h3>Profile</h3>
+        <label>Name
+          <input id="name" placeholder="Alex" />
+        </label>
+        <label>Timezone
+          <input id="timezone" placeholder="Europe/Athens" />
+        </label>
+        <label>Tone
+          <input id="tone" placeholder="professional" />
+        </label>
+        <label>Notes
+          <textarea id="notes" rows="3" placeholder="Short notes only (max 500)"></textarea>
+        </label>
+        <div class="profile-actions">
+          <button id="save-profile">Save</button>
+          <button id="forget-profile" class="danger">Forget</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main chat area -->
+    <main class="chat" aria-live="polite">
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <textarea id="input" rows="2" placeholder="Γράψε εδώ… (Ctrl/Cmd + Enter για αποστολή)"></textarea>
+        <button id="send">Send</button>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
+
