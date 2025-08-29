@@ -1,4 +1,5 @@
-// Minimal client for our Flask API.
+// static/js/app.js
+// Client for Flask API: conversations, messages, chat (text + images), profile.
 
 const el = {
   conversations: document.getElementById("conversations"),
@@ -12,6 +13,7 @@ const el = {
   notes: document.getElementById("notes"),
   saveProfile: document.getElementById("save-profile"),
   forgetProfile: document.getElementById("forget-profile"),
+  file: document.getElementById("file"), // <input type="file" id="file" accept="image/*" multiple />
 };
 
 let state = { conversations: [], activeId: null };
@@ -55,7 +57,12 @@ function renderConversations() {
       e.stopPropagation();
       await jdel(`/api/conversations/${c.id}`);
       await loadConversations();
-      el.messages.innerHTML = "";
+      if (!state.conversations.length) {
+        await newConversation(); // auto-create if none left
+      } else if (!state.conversations.find(x => x.id === state.activeId)) {
+        state.activeId = state.conversations[0].id; // pick first if active was deleted
+      }
+      await loadMessages();
     });
     actions.appendChild(del);
 
@@ -91,8 +98,9 @@ function renderMessages(msgs) {
     const div = document.createElement("div");
     div.className = "msg " + (m.role === "user" ? "user" : "assistant");
     const time = new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    const html = DOMPurify.sanitize(marked.parse(m.content || ""));
     div.innerHTML = `
-      <div class="text">${escapeHtml(m.content)}</div>
+      <div class="text">${html}</div>
       <span class="meta">${time}</span>
     `;
     el.messages.appendChild(div);
@@ -100,17 +108,32 @@ function renderMessages(msgs) {
   el.messages.scrollTop = el.messages.scrollHeight;
 }
 
-// ---- Chat -------------------------------------------------------------
+// ---- Chat (text + images) --------------------------------------------
 async function sendMessage() {
   const text = el.input.value.trim();
-  if (!text) return;
+  const images = await collectSelectedImages(); // [{mime,b64}] or []
+
+  if (!text && images.length === 0) return;
   if (!state.activeId) await newConversation();
 
-  // optimistic user bubble
-  const userDiv = document.createElement("div");
-  userDiv.className = "msg user";
-  userDiv.innerHTML = `<div class="text">${escapeHtml(text)}</div><span class="meta">now</span>`;
-  el.messages.appendChild(userDiv);
+  // optimistic user text bubble
+  if (text) {
+    const userDiv = document.createElement("div");
+    userDiv.className = "msg user";
+    const userHtml = DOMPurify.sanitize(marked.parse(text));
+    userDiv.innerHTML = `<div class="text">${userHtml}</div><span class="meta">now</span>`;
+    el.messages.appendChild(userDiv);
+  }
+
+  // optimistic image bubbles
+  if (images.length) {
+    const imgWrap = document.createElement("div");
+    imgWrap.className = "msg user";
+    const imgsHtml = images.map(i => `<img src="data:${i.mime};base64,${i.b64}" alt="image" />`).join("");
+    imgWrap.innerHTML = `<div class="text">${imgsHtml}</div><span class="meta">now</span>`;
+    el.messages.appendChild(imgWrap);
+  }
+
   el.messages.scrollTop = el.messages.scrollHeight;
 
   el.input.value = "";
@@ -118,13 +141,14 @@ async function sendMessage() {
   el.send.disabled = true;
 
   try {
-    const res = await jpost("/api/chat", { conversation_id: state.activeId, message: text });
+    const res = await jpost("/api/chat", { conversation_id: state.activeId, message: text, images });
     const botDiv = document.createElement("div");
     botDiv.className = "msg assistant";
-    botDiv.innerHTML = `<div class="text">${escapeHtml(res.reply)}</div><span class="meta">now</span>`;
+    const botHtml = DOMPurify.sanitize(marked.parse(res.reply || ""));
+    botDiv.innerHTML = `<div class="text">${botHtml}</div><span class="meta">now</span>`;
     el.messages.appendChild(botDiv);
     el.messages.scrollTop = el.messages.scrollHeight;
-    await loadConversations(); // refresh titles/order
+    await loadConversations();
   } catch (e) {
     alert("Chat error: " + e.message);
   } finally {
@@ -132,6 +156,18 @@ async function sendMessage() {
     el.send.disabled = false;
     el.input.focus();
   }
+}
+
+async function collectSelectedImages() {
+  const out = [];
+  const files = el.file ? el.file.files : null;
+  if (!files || !files.length) return out;
+  for (const f of files) {
+    const b64 = await fileToBase64(f);
+    out.push({ mime: f.type || "image/png", b64 });
+  }
+  if (el.file) el.file.value = "";
+  return out;
 }
 
 // ---- Profile ----------------------------------------------------------
@@ -159,8 +195,13 @@ async function forgetProfile() {
 }
 
 // ---- Utils & wiring ---------------------------------------------------
-function escapeHtml(s) {
-  return (s || "").replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+function fileToBase64(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res((r.result || "").toString().split(",")[1] || "");
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
 }
 
 el.newConvo.addEventListener("click", newConversation);
@@ -171,6 +212,7 @@ el.input.addEventListener("keydown", (e) => {
 el.saveProfile.addEventListener("click", saveProfile);
 el.forgetProfile.addEventListener("click", forgetProfile);
 
+// Bootstrap
 (async function init() {
   await Promise.all([loadConversations(), loadProfile()]);
   if (state.activeId) await loadMessages();

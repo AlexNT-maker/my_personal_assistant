@@ -1,8 +1,10 @@
+# main.py
+# Desktop Chatbot backend — Flask + SQLite + OpenAI
+# Comments & tech terms in English.
+
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from sqlalchemy import (
-    create_engine, Column, Integer, String, Text, ForeignKey, DateTime
-)
+from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from datetime import datetime
 from dotenv import load_dotenv
@@ -14,6 +16,7 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+assert OPENAI_API_KEY, "OPENAI_API_KEY is missing in .env"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -66,10 +69,10 @@ def ensure_profile(session):
     return prof
 
 def title_from_first_user_message(history):
-    """history: list of dicts with keys role/content"""
+    """history: list of dicts with keys role/content (text only)"""
     for m in history:
         if m["role"] == "user":
-            text = (m["content"] or "").strip().splitlines()[0]
+            text = (m["content"] if isinstance(m["content"], str) else "").strip().splitlines()[0]
             return (text[:40] + "…") if len(text) > 40 else text
     return "New Conversation"
 
@@ -155,20 +158,23 @@ def list_messages(cid):
     } for m in c.messages]
     return jsonify(msgs)
 
-# --- Chat endpoint ------------------------------------------------------
+# --- Chat endpoint (text + images) -------------------------------------
 @app.post("/api/chat")
 def chat():
     """
     JSON body:
     {
       "conversation_id": <int|null>,
-      "message": "User text"
+      "message": "User text",
+      "images": [ {"mime": "image/png", "b64": "<base64>"} ]   # optional
     }
     """
     s = get_session()
     data = request.json or {}
     text = (data.get("message") or "").strip()
-    if not text:
+    images = data.get("images", [])
+
+    if not text and not images:
         return jsonify({"error": "Empty message"}), 400
 
     # Get or create conversation
@@ -180,14 +186,15 @@ def chat():
     else:
         convo = Conversation(title="New Conversation")
         s.add(convo)
-        s.flush()  # get convo.id without full commit
+        s.flush()  # get convo.id
 
-    # Save user message
-    m_user = Message(conversation_id=convo.id, role="user", content=text)
+    # Persist user text message (store only text for now)
+    user_text_to_store = text if text else "[image(s) uploaded]"
+    m_user = Message(conversation_id=convo.id, role="user", content=user_text_to_store)
     s.add(m_user)
     s.commit()
 
-    # Build history for the API call
+    # Build history for the API call (string-only from DB)
     history = [
         {"role": m.role, "content": m.content}
         for m in s.query(Message)
@@ -196,28 +203,39 @@ def chat():
                 .all()
     ]
 
-    # System style to preserve mentor tone
+    # Personalization from profile
+    prof = ensure_profile(s)
+    profile_note = f"User name: {prof.name or 'User'}. Timezone: {prof.timezone or 'Europe/Athens'}. Tone: {prof.tone or 'professional'}."
+    if prof.notes:
+        profile_note += f" Extra notes: {prof.notes[:300]}"
+
     system_msg = {
-        "role": "system",
-        "content": 
-            """You are a mentor-style assistant. Use Greek for prose and keep technical terms in English. 
-            Be concise, structured, and slightly humorous. Preserve privacy; avoid storing sensitive data.
-            Always respond in Greek unless the user specifies otherwise.
-            Try to take your time to give a thoughtful answer.
-             Your job is to be a good programmer.
-             Do not give very complicated answers, I am programming for 1 year.
-                Use bullet points and lists where appropriate.
-                1. Be concise and clear.
-                2. Use simple language.
-                3. Avoid jargon.
-                4. Provide examples where possible.
-                5. Be friendly and approachable.
-                6. Encourage questions and curiosity.
-                7. Try to put some space between paragraphs.
-                8. Use emojis sparingly to add a friendly tone.
-             """.strip()
-    }
+    "role": "system",
+    "content": (
+        "You are a mentor-style assistant. Use Greek for prose and keep technical terms in English. "
+        "Write with clear structure using Markdown. Default to short paragraphs with whitespace. "
+        "Use bullet lists when enumerating, tables for comparisons when helpful, and fenced code blocks with language. "
+        "Prefer clarity over verbosity; add small headings if it aids scanning. "
+        "Preserve privacy; avoid storing sensitive data. "
+        + profile_note
+    )
+}
+
+
+    # If images are attached, send a multimodal last user turn (text + images)
+    user_content_parts = []
+    if text:
+        user_content_parts.append({"type": "text", "text": text})
+    for img in images:
+        data_url = f"data:{img.get('mime','image/png')};base64,{img.get('b64','')}"
+        user_content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+
     api_messages = [system_msg] + history
+    if user_content_parts:
+        # replace the last history user text with the parts
+        if api_messages and api_messages[-1]["role"] == "user":
+            api_messages.pop()
+        api_messages.append({"role": "user", "content": user_content_parts})
 
     # Call OpenAI
     try:
@@ -246,6 +264,6 @@ def chat():
         "reply": answer
     })
 
-# -- Main -------------------------------------------------------------------
+# --- Main ---------------------------------------------------------------
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
