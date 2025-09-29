@@ -315,6 +315,7 @@ def chat():
             "Use bullet lists when enumerating, tables for comparisons when helpful, and fenced code blocks with language. "
             "Prefer clarity over verbosity; add small headings if it aids scanning. "
             "Preserve privacy; avoid storing sensitive data. "
+            "If 5o mini model that we use is not capable to solve or explain a problem you should tell me to switch to a more skillful model"
             + profile_note
         )
     }
@@ -364,7 +365,7 @@ def chat():
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=api_messages,
-            temperature=0.4,
+            temperature=1,
         )
         answer = resp.choices[0].message.content
     except Exception as e:
@@ -383,4 +384,8 @@ def chat():
 
 # --- Main ---------------------------------------------------------------
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    import threading, webbrowser
+    def open_browser():
+        webbrowser.open_new("http://127.0.0.1:5000")
+    threading.Timer(1.0, open_browser).start()
+    app.run(host="127.0.0.1", port=5000, debug=False)
