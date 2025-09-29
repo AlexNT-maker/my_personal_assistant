@@ -14,7 +14,7 @@ import os, uuid, base64
 # --- Setup --------------------------------------------------------------
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # ή gpt-5o-mini αν το έχεις
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-5-mini") 
 assert OPENAI_API_KEY, "OPENAI_API_KEY is missing in .env"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
