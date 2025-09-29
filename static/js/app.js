@@ -1,5 +1,6 @@
 // static/js/app.js
-// Client for Flask API: conversations, messages, chat (text + images), profile.
+// Client for Flask API: conversations, messages, chat (text + attachments), profile.
+// Uses Markdown (marked + DOMPurify). Supports multi-pick uploads queued before Send.
 
 const el = {
   conversations: document.getElementById("conversations"),
@@ -13,12 +14,14 @@ const el = {
   notes: document.getElementById("notes"),
   saveProfile: document.getElementById("save-profile"),
   forgetProfile: document.getElementById("forget-profile"),
-  file: document.getElementById("file"), // <input type="file" id="file" accept="image/*" multiple />
+  file: document.getElementById("file"),            // <input type="file" id="file" multiple />
+  pending: document.getElementById("pending-files") // <div id="pending-files"></div>
 };
 
 let state = { conversations: [], activeId: null };
+let pendingFiles = []; // queue of File objects from multiple picks
 
-// ---- Fetch helpers ----------------------------------------------------
+// ---------------- Fetch helpers ----------------
 async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error(await r.text()); return r.json(); }
 async function jdel(url) { const r = await fetch(url, { method: "DELETE" }); if (!r.ok) throw new Error(await r.text()); return r.json(); }
 async function jpost(url, body) {
@@ -30,7 +33,7 @@ async function jput(url, body) {
   if (!r.ok) throw new Error(await r.text()); return r.json();
 }
 
-// ---- Conversations ----------------------------------------------------
+// ---------------- Conversations ----------------
 async function loadConversations() {
   state.conversations = await jget("/api/conversations");
   if (!state.activeId && state.conversations.length) state.activeId = state.conversations[0].id;
@@ -58,9 +61,9 @@ function renderConversations() {
       await jdel(`/api/conversations/${c.id}`);
       await loadConversations();
       if (!state.conversations.length) {
-        await newConversation(); // auto-create if none left
+        await newConversation();                     // auto-create if none left
       } else if (!state.conversations.find(x => x.id === state.activeId)) {
-        state.activeId = state.conversations[0].id; // pick first if active was deleted
+        state.activeId = state.conversations[0].id;  // pick first if active was deleted
       }
       await loadMessages();
     });
@@ -85,7 +88,7 @@ async function newConversation() {
   el.messages.innerHTML = "";
 }
 
-// ---- Messages ---------------------------------------------------------
+// ---------------- Messages ----------------
 async function loadMessages() {
   if (!state.activeId) return;
   const msgs = await jget(`/api/messages/${state.activeId}`);
@@ -97,7 +100,7 @@ function renderMessages(msgs) {
   for (const m of msgs) {
     const div = document.createElement("div");
     div.className = "msg " + (m.role === "user" ? "user" : "assistant");
-    const time = new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    const time = new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const html = DOMPurify.sanitize(marked.parse(m.content || ""));
     div.innerHTML = `
       <div class="text">${html}</div>
@@ -108,15 +111,88 @@ function renderMessages(msgs) {
   el.messages.scrollTop = el.messages.scrollHeight;
 }
 
-// ---- Chat (text + images) --------------------------------------------
+// --------------- Pending files UI ---------------
+function onFilePick() {
+  const files = Array.from(el.file?.files || []);
+  if (!files.length) return;
+  for (const f of files) pendingFiles.push(f); // queue them
+  el.file.value = "";                          // allow picking more again
+  renderPendingChips();
+}
+
+function renderPendingChips() {
+  if (!el.pending) return;
+  if (!pendingFiles.length) { el.pending.innerHTML = ""; return; }
+  el.pending.innerHTML = pendingFiles.map((f, idx) => {
+    const isImg = (f.type || "").startsWith("image/");
+    const cls = isImg ? "file-chip image" : "file-chip";
+    return `<button type="button" class="${cls}" data-idx="${idx}" title="Remove">${escapeHtml(f.name)}<span class="x">✕</span></button>`;
+  }).join("");
+
+  // remove handlers
+  for (const btn of el.pending.querySelectorAll(".file-chip")) {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.dataset.idx);
+      pendingFiles.splice(i, 1);
+      renderPendingChips();
+    });
+  }
+}
+
+// --------------- Upload helper ---------------
+async function uploadSelectedFilesEnsureConversation() {
+  // Fallback: if queue is empty, read directly from the input
+  let filesToSend = pendingFiles.length
+    ? pendingFiles
+    : Array.from(el.file?.files || []);
+
+  if (filesToSend.length === 0) {
+    return { conversation_id: state.activeId, attachments: [] };
+  }
+
+  // ensure conversation exists first (upload needs cid)
+  if (!state.activeId) {
+    const created = await jpost("/api/conversations", {});
+    state.activeId = created.id;
+    await loadConversations();
+  }
+
+  const fd = new FormData();
+  fd.append("conversation_id", String(state.activeId));
+  for (const f of filesToSend) fd.append("files", f);
+
+  // simple debug (βλέπεις στο DevTools → Network/Console)
+  console.log("Uploading", filesToSend.map(f => `${f.name} (${f.type || 'unknown'})`));
+
+  const res = await fetch("/api/upload", { method: "POST", body: fd });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => String(res.status));
+    console.error("Upload failed:", msg);
+    throw new Error(msg);
+  }
+  const data = await res.json();
+
+  // clear queue & native input
+  pendingFiles = [];
+  if (el.file) el.file.value = "";
+  if (el.pending) el.pending.innerHTML = "";
+
+  return data; // {conversation_id, attachments:[{id, filename, mime, size}]}
+}
+
+
+// --------------- Chat (text + attachments) ---------------
 async function sendMessage() {
   const text = el.input.value.trim();
-  const images = await collectSelectedImages(); // [{mime,b64}] or []
 
-  if (!text && images.length === 0) return;
-  if (!state.activeId) await newConversation();
+  // 1) Upload any queued files & ensure conversation
+  const uploadInfo = await uploadSelectedFilesEnsureConversation();
+  const attachmentIds = (uploadInfo.attachments || []).map(a => a.id);
 
-  // optimistic user text bubble
+  if (!text && attachmentIds.length === 0) return;
+  if (!state.activeId) state.activeId = uploadInfo.conversation_id;
+
+  // 2) optimistic user text bubble
   if (text) {
     const userDiv = document.createElement("div");
     userDiv.className = "msg user";
@@ -125,23 +201,32 @@ async function sendMessage() {
     el.messages.appendChild(userDiv);
   }
 
-  // optimistic image bubbles
-  if (images.length) {
-    const imgWrap = document.createElement("div");
-    imgWrap.className = "msg user";
-    const imgsHtml = images.map(i => `<img src="data:${i.mime};base64,${i.b64}" alt="image" />`).join("");
-    imgWrap.innerHTML = `<div class="text">${imgsHtml}</div><span class="meta">now</span>`;
-    el.messages.appendChild(imgWrap);
+  // 3) optimistic preview for uploaded files (chips with filenames)
+  if (uploadInfo.attachments && uploadInfo.attachments.length) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg user";
+    const chips = uploadInfo.attachments.map(a => {
+      const isImg = (a.mime || "").startsWith("image/");
+      const cls = isImg ? "file-chip image" : "file-chip";
+      return `<span class="${cls}">${escapeHtml(a.filename)}</span>`;
+    }).join("");
+    wrap.innerHTML = `<div class="text">${chips}</div><span class="meta">now</span>`;
+    el.messages.appendChild(wrap);
   }
 
   el.messages.scrollTop = el.messages.scrollHeight;
 
+  // 4) lock UI, call /api/chat
   el.input.value = "";
   el.input.disabled = true;
   el.send.disabled = true;
 
   try {
-    const res = await jpost("/api/chat", { conversation_id: state.activeId, message: text, images });
+    const res = await jpost("/api/chat", {
+      conversation_id: state.activeId,
+      message: text,
+      attachment_ids: attachmentIds
+    });
     const botDiv = document.createElement("div");
     botDiv.className = "msg assistant";
     const botHtml = DOMPurify.sanitize(marked.parse(res.reply || ""));
@@ -158,19 +243,7 @@ async function sendMessage() {
   }
 }
 
-async function collectSelectedImages() {
-  const out = [];
-  const files = el.file ? el.file.files : null;
-  if (!files || !files.length) return out;
-  for (const f of files) {
-    const b64 = await fileToBase64(f);
-    out.push({ mime: f.type || "image/png", b64 });
-  }
-  if (el.file) el.file.value = "";
-  return out;
-}
-
-// ---- Profile ----------------------------------------------------------
+// ---------------- Profile ----------------
 async function loadProfile() {
   const p = await jget("/api/profile");
   el.name.value = p.name || "";
@@ -194,14 +267,9 @@ async function forgetProfile() {
   await loadProfile();
 }
 
-// ---- Utils & wiring ---------------------------------------------------
-function fileToBase64(file) {
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res((r.result || "").toString().split(",")[1] || "");
-    r.onerror = rej;
-    r.readAsDataURL(file);
-  });
+// ---------------- Utils & wiring ----------------
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
 el.newConvo.addEventListener("click", newConversation);
@@ -211,6 +279,7 @@ el.input.addEventListener("keydown", (e) => {
 });
 el.saveProfile.addEventListener("click", saveProfile);
 el.forgetProfile.addEventListener("click", forgetProfile);
+if (el.file) el.file.addEventListener("change", onFilePick);
 
 // Bootstrap
 (async function init() {

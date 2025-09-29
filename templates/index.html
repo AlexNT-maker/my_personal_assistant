@@ -47,14 +47,16 @@
     <main class="chat" aria-live="polite">
       <div id="messages" class="messages"></div>
       <div class="composer">
-       <input type="file" id="file" accept="image/*" multiple />
-        <textarea id="input" rows="2" placeholder="Γράψε εδώ… (Ctrl/Cmd + Enter για αποστολή)"></textarea>
-        <button id="send">Send</button>
-      </div>
+  <input type="file" id="file" multiple /> 
+  <textarea id="input" rows="2" placeholder="Γράψε εδώ… (Ctrl/Cmd + Enter για αποστολή)"></textarea>
+  <div id="pending-files" class="pending-files"></div>
+  <button id="send">Send</button>
+</div>
+
     </main>
   </div>
 
-  <script src="/static/app.js"></script>
+  
 </body>
 </html>
 
